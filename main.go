@@ -7,6 +7,8 @@ import (
 	"os/signal"
 	"time"
 
+	influxdb "github.com/influxdata/influxdb/client/v2"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudwatch"
@@ -32,7 +34,8 @@ func websiteConnectionTest(website string) (*websiteMetrics, error) {
 		defer conn.Close()
 		log.Printf("Connection to %s succeeded (%s)", website, time.Since(start))
 		metrics = &websiteMetrics{Website: website, Latency: time.Since(start), CheckTime: time.Now()}
-		cloudWatchPublisher([]*websiteMetrics{metrics})
+		// cloudWatchPublisher([]*websiteMetrics{metrics})
+		influxDBPublisher([]*websiteMetrics{metrics})
 	}
 	return metrics, err
 }
@@ -83,6 +86,43 @@ func cloudWatchPublisher(websiteMetrics []*websiteMetrics) {
 	} else {
 		log.Printf("Successfully published to CloudWatch")
 	}
+}
+
+func influxDBPublisher(websiteMetrics []*websiteMetrics) {
+	// Publish to InfluxDB
+	client, err := influxdb.NewHTTPClient(influxdb.HTTPConfig{
+		Addr: "http://localhost:8086",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer client.Close()
+
+	bp, err := influxdb.NewBatchPoints(influxdb.BatchPointsConfig{
+		Database:  "test_metrics",
+		Precision: "s",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for _, websiteMetric := range websiteMetrics {
+		tags := map[string]string{"website": websiteMetric.Website}
+		fields := map[string]interface{}{
+			"latency":   websiteMetric.Latency.Seconds() * 1000,
+			"checkTime": websiteMetric.CheckTime,
+		}
+		pt, err := influxdb.NewPoint("website_metrics", tags, fields, websiteMetric.CheckTime)
+		if err != nil {
+			log.Fatal(err)
+		}
+		bp.AddPoint(pt)
+	}
+	err = client.Write(bp)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 }
 
 func main() {
